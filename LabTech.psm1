@@ -539,7 +539,7 @@ Function Reinstall-LTService{
     http://labtechconsulting.com
 #> 
     Param(
-        [string]$Server = (Get-LTServiceInfo).'Server Address' ,
+        [string]$Server = ((Get-LTServiceInfo).'Server Address' -split "|",0,"SimpleMatch" | select -First 1) ,
         [string]$Password = (Get-LTServiceInfo).ServerPassword ,
         [string]$LocationID = (Get-LTServiceInfo).LocationID   
     )
