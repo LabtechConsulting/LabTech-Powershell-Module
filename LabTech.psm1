@@ -53,7 +53,10 @@ Function Get-LTServiceInfo{
   
   Process{
     Try{
-        Get-ItemProperty HKLM:\SOFTWARE\LabTech\Service -ErrorAction Stop | Select * -exclude $exclude
+    	$serverInfo = Get-ItemProperty HKLM:\SOFTWARE\LabTech\Service -ErrorAction Stop | Select * -exclude $exclude
+        $serverAddress = $serverInfo.'Server Address'
+        if ($serverAddress -like '*|*') { $serverInfo.'Server Address' = $serverAddress.Split('|')[0] }
+        $serverInfo
     }#End Try
     
     Catch{
