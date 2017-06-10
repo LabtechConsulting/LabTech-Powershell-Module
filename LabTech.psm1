@@ -7,10 +7,10 @@
 
 
 .DESCRIPTION
-    This is a set of commandlets to interface with the LabTech Agent v10.5
+    This is a set of commandlets to interface with the LabTech Agent v10.5 and v11.
 
 .NOTES
-    Version:        1.1
+    Version:        1.2
     Author:         Chris Taylor
     Website:        labtechconsulting.com
     Creation Date:  3/14/2016
@@ -18,13 +18,19 @@
 
     Update Date: 6/1/2017
     Purpose/Change: Updates for better overall compatibility, including better support for PowerShell V2
+
+    Update Date: 6/7/2017
+    Purpose/Change: Updates to address 32-bit vs. 64-bit operations.
+
 #>
     
-if (-not ($PSVersionTable)) {Write-Output 'PS1 Detected. PowerShell Version 2.0 or higher is required.';return}
+#requires -version 2
+if (-not ($PSVersionTable)) {Write-Warning 'PS1 Detected. PowerShell Version 2.0 or higher is required.';return}
 if (-not ($PSVersionTable) -or $PSVersionTable.PSVersion.Major -lt 3 ) {Write-Verbose 'PS2 Detected. PowerShell Version 3.0 or higher may be required for full functionality'}
+if ((Get-WmiObject -Class Win32_OperatingSystem).OSArchitecture -eq '64-bit' -and [IntPtr]::Size -ne 8) {Write-Warning '32-bit Session detected on 64-bit OS. Must run in native environment.';return}
 
 #Module Version
-$ModuleVersion = "1.1"
+$ModuleVersion = "1.2"
 
 #Ignore SSL errors
 add-type @"
@@ -186,7 +192,7 @@ Function Restart-LTService{
   }#End Process
   
   End{
-    If($?){Write-Output "Services Restarted successfully."}
+    If ($?){Write-Output "Services Restarted successfully."}
     Else {$Error[0]}
   }#End End
 }#End Function Restart-LTService
@@ -234,7 +240,7 @@ Function Stop-LTService{
   }#End Process
   
   End{
-    If($?){
+    If ($?){
         Write-Output "Services Stopped successfully."
     }
     Else {$Error[0]}
@@ -279,24 +285,25 @@ Function Start-LTService{
         #Kill all processes that are using the tray port 
         [array]$processes = @()
         $Port = (Get-LTServiceInfo -EA 0|Select-Object -Expand TrayPort -EA 0)
-        $netstat = netstat.exe -a -o -n | Select-String $Port -EA 0
-        foreach ($line in $netstat){
-            $processes += ($line -split '  {3,}')[-1]
-        }
-        $processes = $processes | Where-Object {$_ -gt 0 -and $_ -match '^\d+$'}| Sort-Object | Get-Unique
-        if ($processes) {
-	    foreach ($proc in $processes){
-                Write-Output "Process ID:$proc is using port $Port. Killing process."
-                Stop-Process -ID $proc -Force -Verbose
-	    }
-        }
+	if (-not ($Port)) {$Port = "42000"}
     }#End Begin
   
     Process{
         Try{
-            @('LTService','LTSvcMon') | ForEach-Object {
-                        if (Get-Service $_ -EA 0) {Set-Service $_ -StartupType Automatic -EA 0; Start-Service $_ -EA 0}
-            }
+          $netstat = netstat.exe -a -o -n | Select-String $Port -EA 0
+          foreach ($line in $netstat){
+              $processes += ($line -split '  {3,}')[-1]
+          }
+          $processes = $processes | Where-Object {$_ -gt 0 -and $_ -match '^\d+$'}| Sort-Object | Get-Unique
+          if ($processes) {
+  	    foreach ($proc in $processes){
+                  Write-Output "Process ID:$proc is using port $Port. Killing process."
+                  Stop-Process -ID $proc -Force -Verbose
+	      }
+          }
+          @('LTService','LTSvcMon') | ForEach-Object {
+                      if (Get-Service $_ -EA 0) {Set-Service $_ -StartupType Automatic -EA 0; Start-Service $_ -EA 0}
+          }
         }#End Try
     
         Catch{
@@ -306,7 +313,7 @@ Function Start-LTService{
   
     End
     {
-        If($?){
+        If ($?){
             Write-Output "Services Started successfully."
         }
         else{
@@ -372,7 +379,7 @@ Function Uninstall-LTService{
                 Write-Error 'Server address is not formatted correctly. Example: https://labtech.labtechconsulting.com' -ErrorAction Stop
             }        
         }
-        if($Backup){
+        if ($Backup){
             New-LTServiceBackup
         }
         $Server = ($Server.Split('|')|Foreach {$_.Trim()}|Select-Object -Index 0 -EA 0)
@@ -438,7 +445,7 @@ Function Uninstall-LTService{
     Process{
         Try{
             #Kill all running processes from %ltsvcdir%   
-            if(Test-Path $BasePath){
+            if (Test-Path $BasePath){
                 $Executables = (Get-ChildItem $BasePath -Filter *.exe -Recurse -ErrorAction SilentlyContinue|Select -Expand Name|Foreach {$_.Trim('.exe')})
                 if ($Executables) {
 			ForEach($Item in $Executables){
@@ -482,7 +489,7 @@ Function Uninstall-LTService{
     }#End Process
   
     End{
-        If($?){
+        If ($?){
             Write-Output "LabTech has been successfully uninstalled."
         }
         else {
@@ -556,12 +563,12 @@ Function Install-LTService{
         }
         
         $DotNET = Get-ChildItem 'HKLM:\SOFTWARE\Microsoft\NET Framework Setup\NDP' -recurse -EA 0 | Get-ItemProperty -name Version,Release -EA 0 | Where-Object { $_.PSChildName -match '^(?!S)\p{L}'} | Select-Object -ExpandProperty Version -EA 0
-        if(-not ($DotNet -like '3.5.*')){
+        if (-not ($DotNet -like '3.5.*')){
             Write-Output ".NET 3.5 installation needed."
             #Install-WindowsFeature Net-Framework-Core
             $OSVersion = [Version](Get-CimInstance Win32_OperatingSystem).version
 
-            if($OSVersion -gt 6.2){
+            if ($OSVersion -gt 6.2){
                 try{
                     $Result = Enable-WindowsOptionalFeature -Online -FeatureName "NetFx3" -All
                 }
@@ -572,7 +579,7 @@ Function Install-LTService{
             }
             else{
                 $Result = Dism.exe /online /get-featureinfo /featurename:NetFx3 2>''
-                If($Result -contains "State : Enabled"){ 
+                If ($Result -contains "State : Enabled"){ 
                     Write-Warning ".Net Framework 3.5 has been installed and enabled." 
                 } 
                 Else{
@@ -582,7 +589,7 @@ Function Install-LTService{
             
             $DotNET = Get-ChildItem 'HKLM:\SOFTWARE\Microsoft\NET Framework Setup\NDP' -recurse | Get-ItemProperty -name Version,Release -EA 0 | Where-Object{ $_.PSChildName -match '^(?!S)\p{L}'} | Select-Object -ExpandProperty Version -EA 0
         }
-        if($DotNet -like '3.5.*'){
+        if ($DotNet -like '3.5.*'){
             if (Get-Service 'LTService','LTSvcMon' -ErrorAction SilentlyContinue) {
                 Write-Error "LabTech is already installed." -ErrorAction Stop
             }
@@ -634,11 +641,11 @@ Function Install-LTService{
   
     End{
         $tmpLTSI = Get-LTServiceInfo -EA 0
-	If(($tmpLTSI|Select-Object -Expand ID -EA 0) -gt 1){
+        If (($tmpLTSI|Select-Object -Expand ID -EA 0) -gt 1){
             Write-Host ""
             Write-Output "LabTech has been installed successfully. Agent ID: $($tmpLTSI|Select-Object -Expand ID -EA 0) LocationID: $($tmpLTSI|Select-Object -Expand LocationID -EA 0)"
             
-            if($Rename){
+            if ($Rename){
                 Rename-LTAddRemove -Name $Rename
             }
         }
@@ -692,7 +699,7 @@ Function Reinstall-LTService{
     This will uninstall the LabTech agent using the provided server URL to download the uninstallers.
 
 .NOTES
-    Version:        1.1
+    Version:        1.2
     Author:         Chris Taylor
     Website:        labtechconsulting.com
     Creation Date:  3/14/2016
@@ -700,6 +707,9 @@ Function Reinstall-LTService{
 
     Update Date: 6/1/2017
     Purpose/Change: Updates for better overall compatibility, including better support for PowerShell V2
+    
+    Update Date: 6/8/2017
+    Purpose/Change: Update to support user provided settings for -Server, -Password, -LocationID.
     
 .LINK
     http://labtechconsulting.com
@@ -717,37 +727,47 @@ Function Reinstall-LTService{
     	Remove-Variable Settings -EA 0 #Clearing Variables for use
         # Gather install stats from registry or backed up settings
         $Settings = Get-LTServiceInfo -ErrorAction SilentlyContinue
-        if(-not ($Settings)){
+        if (-not ($Settings)){
             $Settings = Get-LTServiceInfoBackup -ErrorAction SilentlyContinue
         }
-        if($Settings){
-            $Server = $Settings|Select-object -Expand 'Server Address' -EA 0
-            $Password = $Settings|Select-object -Expand ServerPassword -EA 0
-            $LocationID = $Settings|Select-object -Expand LocationID -EA 0
-        }
         if (-not ($Server)){
-            $Server = Read-Host -Prompt 'Provide the URL to you LabTech server (https://lt.domain.com):'
-            if ($server -notlike 'http*://*'){
-                Write-Error 'Server address is not formatted correctly. Example: https://labtech.labtechconsulting.com' -ErrorAction Stop
+            if ($Settings){
+              $Server = $Settings|Select-object -Expand 'Server Address' -EA 0
+            }
+            if (-not ($Server)){
+                $Server = Read-Host -Prompt 'Provide the URL to you LabTech server (https://lt.domain.com):'
             }
         }
         if (-not ($Password)){
-            $Password = Read-Host -Prompt 'Provide the server password:'
+            if ($Settings){
+                $Password = $Settings|Select-object -Expand ServerPassword -EA 0
+            }
+            if (-not ($Password)){
+                $Password = Read-Host -Prompt 'Provide the server password:'
+            }
         }
         if (-not ($LocationID)){
-            $LocationID = Read-Host -Prompt 'Provide the LocationID'
+            if ($Settings){
+                $LocationID = $Settings|Select-object -Expand LocationID -EA 0
+            }
+            if (-not ($LocationID)){
+                $LocationID = Read-Host -Prompt 'Provide the LocationID'
+            }
         }
-        if($Rename){
+        if ($Rename){
             $Rename = "-Rename $Rename"
         }
 
         $Server = ($Server.Split('|')|Foreach {$_.Trim()}|Select-Object -Index 0 -EA 0)
+        if ($server -notlike 'http*://*'){
+            Write-Error 'Server address is not formatted correctly. Example: https://labtech.labtechconsulting.com' -ErrorAction Stop
+        }
 
         Write-host "Reinstalling LabTech with the following information, -Server $Server -Password $Password -LocationID $LocationID $Rename"
     }#End Begin
   
     Process{
-        if($Backup){
+        if ($Backup){
             New-LTServiceBackup
         }
         Try{
@@ -762,7 +782,8 @@ Function Reinstall-LTService{
     }#End Process
   
     End{
-        If($?){
+        If ($?){
+            Return
         }
         else {
             $($Error[0])
@@ -815,7 +836,7 @@ Function Get-LTError{
             $Errors = $Errors -join ' ' -split ':::'
             foreach($Line in $Errors){
                 $items = $Line -split "`t" -replace ' - ',''
-                if($items[1]){
+                if ($items[1]){
                     $object = New-Object -TypeName PSObject
                     $object | Add-Member -MemberType NoteProperty -Name ServiceVersion -Value $items[0]
                     $object | Add-Member -MemberType NoteProperty -Name Timestamp -Value $([datetime]$items[1])
@@ -996,7 +1017,7 @@ Function Hide-LTAddRemove{
     }#End Process
   
     End{
-        if($?){
+        if ($?){
             Write-Output "LabTech is now hidden from Add/Remove Programs."
         }
         else {$Error[0]}
@@ -1153,7 +1174,7 @@ Function Test-LTPorts{
     }#End Begin
   
       Process{
-        if($Quiet){
+        if ($Quiet){
             Test-Connection $Servers -Quiet
             return
         }
@@ -1194,8 +1215,8 @@ Function Test-LTPorts{
       }#End Process
   
       End{
-        If($?){
-            if(-not ($Quiet)){
+        If ($?){
+            if (-not ($Quiet)){
                 Write-Output "Finished"
             }          
         }
@@ -1245,10 +1266,10 @@ Function Get-LTLogging{
   
   End{
     if ($?){
-        if($value -eq 1){
+        if ($value -eq 1){
             Write-Output "Current logging level: Normal"
         }
-        elseif($value -eq 1000){
+        elseif ($value -eq 1000){
             Write-Output "Current logging level: Verbose"
         }
         else{
@@ -1295,7 +1316,7 @@ Function Set-LTLogging{
         if ($Normal){
             Set-ItemProperty HKLM:\SOFTWARE\LabTech\Service\Settings -Name 'Debuging' -Value 1
         }
-        if($Verbose){
+        if ($Verbose){
             Set-ItemProperty HKLM:\SOFTWARE\LabTech\Service\Settings -Name 'Debuging' -Value 1000
         }
         Start-LTService
@@ -1378,7 +1399,7 @@ Function New-LTServiceBackup {
     This will also backup those files to "$(Get-LTServiceInfo -EA 0|Select-Object -Expand BasePath -EA 0)Backup"
 
 .NOTES
-    Version:        1.1
+    Version:        1.2
     Author:         Chris Taylor
     Website:        labtechconsulting.com
     Creation Date:  5/11/2017
@@ -1387,19 +1408,67 @@ Function New-LTServiceBackup {
     Update Date: 6/1/2017
     Purpose/Change: Updates for better overall compatibility, including better support for PowerShell V2
     
+    Update Date: 6/7/2017
+    Purpose/Change: Updated error handling.
+    
 .LINK
     http://labtechconsulting.com
 #> 
-    Remove-Variable BackupPath,Keys,Path,Result,Reg,Path -EA 0 #Clearing Variables for use
-    $BackupPath = "$(Get-LTServiceInfo -EA 0|Select-Object -Expand BasePath -EA 0)Backup"
-    $Keys = 'HKLM\SOFTWARE\LabTech'
-    $Path = "$BackupPath\LTBackup.reg"
-    Copy-Item "$(Get-LTServiceInfo -EA 0|Select-Object -Expand BasePath -EA 0)" "$(Get-LTServiceInfo -EA 0|Select-Object -Expand BasePath -EA 0)Backup" -Recurse -Force    
-    $Result = reg.exe export $Keys $Path /y 2>''
-    $Reg = Get-Content $Path
-    $Reg = $Reg -replace [Regex]::Escape('[HKEY_LOCAL_MACHINE\SOFTWARE\LabTech'),'[HKEY_LOCAL_MACHINE\SOFTWARE\LabTechBackup'
-    $Reg | Out-File $Path
-    $Result = reg.exe import $Path 2>''
+    [CmdletBinding()]
+    Param ()
+      
+  Begin{
+    Remove-Variable LTPath,BackupPath,Keys,Path,Result,Reg,RegPath -EA 0 #Clearing Variables for use
+    $LTPath = "$(Get-LTServiceInfo -EA 0|Select-Object -Expand BasePath -EA 0)"
+    $BackupPath = "$($LTPath)Backup"
+    $Keys = "HKLM\SOFTWARE\LabTech"
+    $RegPath = "$BackupPath\LTBackup.reg"
+	
+    Write-Verbose "Verbose: Checking for registry keys."
+    if ((Test-Path ($Keys -replace '^(H[^\\]*)','$1:')) -eq $False){
+        Write-Error "ERROR: Unable to find registry information on LTSvc. Make sure the agent is installed." -ErrorAction Stop
+        Return
+    }
+    if ($(Test-Path -Path $LTPath -PathType Container) -eq $False) {
+      Write-Error "ERROR: Unable to find LTSvc folder path $LTPath" -ErrorAction Stop
+    }
+    New-Item $BackupPath -type directory -ErrorAction SilentlyContinue | Out-Null
+    if ($(Test-Path -Path $BackupPath -PathType Container) -eq $False) {
+      Write-Error "ERROR: Unable to create backup folder path $BackupPath" -ErrorAction Stop
+    }
+  }#End Begin
+  
+  Process{
+    Try{
+	Copy-Item $LTPath $BackupPath -Recurse -Force
+    }#End Try
+    
+    Catch{
+	Write-Error "ERROR: There was a problem backing up the LTSvc Folder. $($Error[0])"
+    }#End Catch
+
+    Try{
+	$Result = reg.exe export "$Keys" "$RegPath" /y 2>''
+	$Reg = Get-Content $RegPath
+	$Reg = $Reg -replace [Regex]::Escape('[HKEY_LOCAL_MACHINE\SOFTWARE\LabTech'),'[HKEY_LOCAL_MACHINE\SOFTWARE\LabTechBackup'
+	$Reg | Out-File $RegPath
+	$Result = reg.exe import "$RegPath" 2>''
+	$True | Out-Null #Protection to prevent exit status error
+    }#End Try
+ 
+    Catch{
+	Write-Error "ERROR: There was a problem backing up the LTSvc Registry keys. $($Error[0])"
+    }#End Catch
+  }#End Process
+  
+  End{
+    If ($?){
+	Write-Output "The LabTech Backup has been created."
+    }
+    Else {
+        Write-Error "ERROR: There was a problem completing the LTSvc Backup. $($Error[0])"
+    }#End If
+  }#End End
 }#End Function New-LTServiceBackup
 
 Function Get-LTServiceInfoBackup { 
@@ -1426,7 +1495,7 @@ Function Get-LTServiceInfoBackup {
   Begin{
     Remove-Variable key -EA 0 #Clearing Variables for use
     Write-Verbose "Verbose: Checking for registry keys."
-    if ((Test-Path 'HKLM:\SOFTWARE\LabTechBackup\Service') -eq $False){
+    If ((Test-Path 'HKLM:\SOFTWARE\LabTechBackup\Service') -eq $False){
         Write-Error "ERROR: Unable to find backup information on LTSvc. Use New-LTServiceBackup to create a settings backup."
         Return
     }
@@ -1444,7 +1513,7 @@ Function Get-LTServiceInfoBackup {
   }#End Process
   
   End{
-    if ($?){
+    If ($?){
         $key
     }    
   }#End End
@@ -1493,12 +1562,11 @@ Function Rename-LTAddRemove{
     }#End Process
   
     End{
-        if($?){
+        if ($?){
             Write-Output "LabTech is now listed as '$Name' in Add/Remove Programs."
         }
         else {$Error[0]}
     }#End End
 }#End Function Rename-LTAddRemove
-
 
 #endregion Functions
