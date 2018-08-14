@@ -1,11 +1,13 @@
-<#
+<# welcome-home
+
+A duplicated created repository creation for LabTech Powershell
+
+For eiting purposes only
 .SYNOPSIS
     This is a PowerShell Module for LabTech.
     labtechconsulting.com
     labtechsoftware.com
     msdn.microsoft.com/powershell
-
-
 .DESCRIPTION
     This is a set of commandlets to interface with the LabTech Agent.
     Tested Versions: v10.5, v11, v12
