@@ -11,7 +11,7 @@
     Tested Versions: v10.5, v11, v12, v2019
 
 .NOTES
-    Version:        1.7
+    Version:        1.8
     Author:         Chris Taylor
     Website:        labtechconsulting.com
     Creation Date:  3/14/2016
@@ -40,7 +40,7 @@ if (-not ($PSVersionTable)) {Write-Warning 'PS1 Detected. PowerShell Version 2.0
 if (-not ($PSVersionTable) -or $PSVersionTable.PSVersion.Major -lt 3 ) {Write-Verbose 'PS2 Detected. PowerShell Version 3.0 or higher may be required for full functionality.'}
 
 #Module Version
-$ModuleVersion = "1.7"
+$ModuleVersion = "1.8"
 $ModuleGuid='f1f06c84-00c8-11ea-b6e8-000c29aaa7df'
 
 If ($env:PROCESSOR_ARCHITEW6432 -match '64' -and [IntPtr]::Size -ne 8) {
@@ -547,7 +547,7 @@ Function Uninstall-LTService{
     This will uninstall the LabTech agent using the provided server URL to download the uninstallers.
 
 .NOTES
-    Version:        1.8
+    Version:        1.9
     Author:         Chris Taylor
     Website:        labtechconsulting.com
     Creation Date:  3/14/2016
@@ -584,6 +584,9 @@ Function Uninstall-LTService{
 
     Update Date: 2/28/2019
     Purpose/Change: Update to try both http and https method if not specified for Server
+
+    Update Date: 6/22/2020
+    Purpose/Change: Use unique pathname for Uninstall MSI, add Uninstaller EXE fallback
 
 .LINK
     http://labtechconsulting.com
@@ -622,7 +625,10 @@ Function Uninstall-LTService{
         }#End If
 
         $BasePath = $(Get-LTServiceInfo -EA 0 -Verbose:$False -WhatIf:$False -Confirm:$False -Debug:$False|Select-Object -Expand BasePath -EA 0)
-        If (-not ($BasePath)) {$BasePath = "$env:windir\LTSVC"}
+        If (-not ($BasePath)) {$BasePath = "${env:windir}\LTSVC"}
+        $UninstallBase="${env:WINDIR}\Temp"
+        $UninstallEXE='Agent_Uninstall.exe'
+        $UninstallMSI='RemoteAgent.msi'
 
         New-PSDrive HKU Registry HKEY_USERS -ErrorAction SilentlyContinue -WhatIf:$False -Confirm:$False -Debug:$False| Out-Null
         $regs = @( 'Registry::HKEY_LOCAL_MACHINE\Software\LabTechMSP',
@@ -659,13 +665,7 @@ Function Uninstall-LTService{
             'HKU:\*\Software\Microsoft\Installer\Products\C4D064F3712D4B64086B5BDE05DBC75F'
         )
 
-        If ($WhatIfPreference -ne $True) {
-            #Cleanup previous uninstallers
-            Remove-Item 'Uninstall.exe','Uninstall.exe.config' -ErrorAction SilentlyContinue -Force -Confirm:$False
-            New-Item "$env:windir\temp\LabTech\Installer" -type directory -ErrorAction SilentlyContinue | Out-Null
-        }#End If
-
-        $xarg = "/x ""$($env:windir)\temp\LabTech\Installer\Agent_Install.msi"" /qn"
+        $xarg = "/x ""$UninstallBase\$UninstallMSI"" /qn"
     }#End Begin
 
     Process{
@@ -673,15 +673,32 @@ Function Uninstall-LTService{
             $Server = Get-LTServiceInfo -EA 0 -Verbose:$False -WhatIf:$False -Confirm:$False -Debug:$False|Select-Object -Expand 'Server' -EA 0
         }
         If (-not ($Server)){
-            $Server = Read-Host -Prompt 'Provide the URL to your LabTech server (https://lt.domain.com):'
+            $Server = Read-Host -Prompt 'Provide the URL to your LabTech server (https://lt.domain.com)'
         }
-        $Server=ForEach ($Svr in $Server) {If ($Svr -notmatch 'https?://.+') {"https://$($Svr)"}; $Svr}
+        If (-not ($Server)){
+            #Download $UninstallEXE
+            $AlternateServer=$Null
+            $uninstaller='https://s3.amazonaws.com/assets-cp/assets/Agent_Uninstall.exe'
+            If ($PSCmdlet.ShouldProcess("$uninstaller", "DownloadFile")) {
+                Write-Debug "Line $(LINENUM): Downloading $UninstallEXE from $uninstaller"
+                $Script:LTServiceNetWebClient.DownloadFile($uninstaller,"$UninstallBase\$UninstallEXE")
+                If ((Test-Path "$UninstallBase\$UninstallEXE")) {
+                    If(((Get-Item "$UninstallBase\$UninstallEXE" -EA 0).length/1KB -gt 80)) {
+                        $AlternateServer='https://s3.amazonaws.com'
+                    } Else {
+                        Write-Warning "Line $(LINENUM): $UninstallEXE size is below normal. Removing suspected corrupt file."
+                        Remove-Item "$UninstallBase\$UninstallEXE" -ErrorAction SilentlyContinue -Force -Confirm:$False   
+                    }#End If
+                }#End If
+            }#End If
+        }
+        $Server=ForEach ($Svr in $Server) {If (($Svr)) {If ($Svr -notmatch 'https?://.+') {"https://$($Svr)"}; $Svr}}
         ForEach ($Svr in $Server) {
             If (-not ($GoodServer)) {
                 If ($Svr -match '^(https?://)?(([12]?[0-9]{1,2}\.){3}[12]?[0-9]{1,2}|[a-z0-9][a-z0-9_-]*(\.[a-z0-9][a-z0-9_-]*)*)$') {
                     Try{
                         If ($Svr -notmatch 'https?://.+') {$Svr = "http://$($Svr)"}
-                        $SvrVerCheck = "$($Svr)/Labtech/Agent.aspx"
+                        $SvrVerCheck = "$($Svr)/LabTech/Agent.aspx"
                         Write-Debug "Line $(LINENUM): Testing Server Response and Version: $SvrVerCheck"
                         $SvrVer = $Script:LTServiceNetWebClient.DownloadString($SvrVerCheck)
 
@@ -702,17 +719,17 @@ Function Uninstall-LTService{
                         $installerResult = $installerTest.GetResponse()
                         $installerTest.Abort()
                         If ($installerResult.StatusCode -ne 200) {
-                            Write-Warning "WARNING: Line $(LINENUM): Unable to download Agent_Install.msi from server $($Svr)."
+                            Write-Warning "WARNING: Line $(LINENUM): Unable to download $UninstallMSI from server $($Svr)."
                             Continue
                         }
                         Else {
                             If ($PSCmdlet.ShouldProcess("$installer", "DownloadFile")) {
-                                Write-Debug "Line $(LINENUM): Downloading Agent_Install.msi from $installer"
-                                $Script:LTServiceNetWebClient.DownloadFile($installer,"$env:windir\temp\LabTech\Installer\Agent_Install.msi")
-                                If ((Test-Path "$env:windir\temp\LabTech\Installer\Agent_Install.msi")) {
-                                    If (!((Get-Item "$env:windir\temp\LabTech\Installer\Agent_Install.msi" -EA 0).length/1KB -gt 1234)) {
-                                        Write-Warning "WARNING: Line $(LINENUM): Agent_Install.msi size is below normal. Removing suspected corrupt file."
-                                        Remove-Item "$env:windir\temp\LabTech\Installer\Agent_Install.msi" -ErrorAction SilentlyContinue -Force -Confirm:$False
+                                Write-Debug "Line $(LINENUM): Downloading $UninstallMSI from $installer"
+                                $Script:LTServiceNetWebClient.DownloadFile($installer,"$UninstallBase\$UninstallMSI")
+                                If ((Test-Path "$UninstallBase\$UninstallMSI")) {
+                                    If (!((Get-Item "$UninstallBase\$UninstallMSI" -EA 0).length/1KB -gt 1234)) {
+                                        Write-Warning "WARNING: Line $(LINENUM): $UninstallMSI size is below normal. Removing suspected corrupt file."
+                                        Remove-Item "$UninstallBase\$UninstallMSI" -ErrorAction SilentlyContinue -Force -Confirm:$False
                                         Continue
                                     } Else {
                                         $AlternateServer = $Svr
@@ -742,20 +759,20 @@ Function Uninstall-LTService{
                             Write-Warning "WARNING: Line $(LINENUM): Unable to download Agent_Uninstall from server."
                             Continue
                         } Else {
-                            #Download Agent_Uninstall.exe
+                            #Download $UninstallEXE
                             If ($PSCmdlet.ShouldProcess("$uninstaller", "DownloadFile")) {
-                                Write-Debug "Line $(LINENUM): Downloading Agent_Uninstall.exe from $uninstaller"
-                                $Script:LTServiceNetWebClient.DownloadFile($uninstaller,"$($env:windir)\temp\Agent_Uninstall.exe")
-                                If ((Test-Path "$($env:windir)\temp\Agent_Uninstall.exe") -and !((Get-Item "$($env:windir)\temp\Agent_Uninstall.exe" -EA 0).length/1KB -gt 80)) {
-                                    Write-Warning "WARNING: Line $(LINENUM): Agent_Uninstall.exe size is below normal. Removing suspected corrupt file."
-                                    Remove-Item "$($env:windir)\temp\Agent_Uninstall.exe" -ErrorAction SilentlyContinue -Force -Confirm:$False
+                                Write-Debug "Line $(LINENUM): Downloading $UninstallEXE from $uninstaller"
+                                $Script:LTServiceNetWebClient.DownloadFile($uninstaller,"$UninstallBase\$UninstallEXE")
+                                If ((Test-Path "$UninstallBase\$UninstallEXE") -and !((Get-Item "$UninstallBase\$UninstallEXE" -EA 0).length/1KB -gt 80)) {
+                                    Write-Warning "WARNING: Line $(LINENUM): $UninstallEXE size is below normal. Removing suspected corrupt file."
+                                    Remove-Item "$UninstallBase\$UninstallEXE" -ErrorAction SilentlyContinue -Force -Confirm:$False
                                     Continue
                                 }#End If
                             }#End If
                         }#End If
                         If ($WhatIfPreference -eq $True) {
                             $GoodServer = $Svr
-                        } ElseIf ((Test-Path "$env:windir\temp\LabTech\Installer\Agent_Install.msi") -and (Test-Path "$($env:windir)\temp\Agent_Uninstall.exe")) {
+                        } ElseIf ((Test-Path "$UninstallBase\$UninstallMSI") -and (Test-Path "$UninstallBase\$UninstallEXE")) {
                             $GoodServer = $Svr
                             Write-Verbose "Successfully downloaded files from $($Svr)."
                         } Else {
@@ -767,7 +784,7 @@ Function Uninstall-LTService{
                         Write-Warning "WARNING: Line $(LINENUM): Error encountered downloading from $($Svr)."
                         Continue
                     }
-                } Else {
+                } ElseIf ($Svr) {
                     Write-Verbose "Server address $($Svr) is not formatted correctly. Example: https://lt.domain.com"
                 }#End If
             } Else {
@@ -805,26 +822,26 @@ Function Uninstall-LTService{
                 }#End If
 
                 If ($PSCmdlet.ShouldProcess("msiexec.exe $($xarg)", "Execute MSI Uninstall")) {
-                    If ((Test-Path "$($env:windir)\temp\LabTech\Installer\Agent_Install.msi")) {
+                    If ((Test-Path "$UninstallBase\$UninstallMSI")) {
                         #Run MSI uninstaller for current installation
                         Write-Verbose "Launching MSI Uninstall."
                         Write-Debug "Line $(LINENUM): Executing Command ""msiexec.exe $($xarg)"""
-                        Start-Process -Wait -FilePath "$env:windir\system32\msiexec.exe" -ArgumentList $xarg -WorkingDirectory $env:TEMP
+                        Start-Process -Wait -FilePath "${env:windir}\system32\msiexec.exe" -ArgumentList $xarg -WorkingDirectory $UninstallBase
                         Start-Sleep -Seconds 5
                     } Else {
-                        Write-Verbose "WARNING: $($env:windir)\temp\LabTech\Installer\Agent_Install.msi was not found."
+                        Write-Verbose "WARNING: $UninstallBase\$UninstallMSI was not found."
                     }
                 }#End If
 
-                If ($PSCmdlet.ShouldProcess("$($env:windir)\temp\Agent_Uninstall.exe", "Execute Agent Uninstall")) {
-                    If ((Test-Path "$($env:windir)\temp\Agent_Uninstall.exe")) {
-                        #Run Agent_Uninstall.exe
+                If ($PSCmdlet.ShouldProcess("$UninstallBase\$UninstallEXE", "Execute Agent Uninstall")) {
+                    If ((Test-Path "$UninstallBase\$UninstallEXE")) {
+                        #Run $UninstallEXE
                         Write-Verbose "Launching Agent Uninstaller"
-                        Write-Debug "Line $(LINENUM): Executing Command ""$($env:windir)\temp\Agent_Uninstall.exe"""
-                        Start-Process -Wait -FilePath "$($env:windir)\temp\Agent_Uninstall.exe" -WorkingDirectory $env:TEMP
+                        Write-Debug "Line $(LINENUM): Executing Command ""$UninstallBase\$UninstallEXE"""
+                        Start-Process -Wait -FilePath "$UninstallBase\$UninstallEXE" -WorkingDirectory $UninstallBase
                         Start-Sleep -Seconds 5
                     } Else {
-                        Write-Verbose "WARNING: $($env:windir)\temp\Agent_Uninstall.exe was not found."
+                        Write-Verbose "WARNING: $UninstallBase\$UninstallEXE was not found."
                     }
                 }#End If
 
@@ -892,6 +909,12 @@ Function Uninstall-LTService{
         } ElseIf ($WhatIfPreference -ne $True) {
             Write-Error "ERROR: Line $(LINENUM): No valid server was reached to use for the uninstall." -ErrorAction Stop
         }#End If
+
+        If ($WhatIfPreference -ne $True) {
+            #Cleanup uninstall files
+            Remove-Item "$UninstallBase\$UninstallEXE","$UninstallBase\$UninstallMSI" -ErrorAction SilentlyContinue -Force -Confirm:$False
+        }#End If
+
         Write-Debug "Exiting $($myInvocation.InvocationName) at line $(LINENUM)"
     }#End End
 }#End Function Uninstall-LTService
@@ -913,6 +936,9 @@ Function Install-LTService{
 .PARAMETER ServerPassword
     This is the server password that agents use to authenticate with the LabTech server.
     SELECT SystemPassword FROM config;
+
+.PARAMETER InstallerToken
+    Permits use of installer tokens for customized MSI downloads. (Other installer types are not supported)
 
 .PARAMETER LocationID
     This is the LocationID of the location that the agent will be put into.
@@ -942,7 +968,7 @@ Function Install-LTService{
     This will install the LabTech agent using the provided Server URL, Password, and LocationID.
 
 .NOTES
-    Version:        2.0
+    Version:        2.1
     Author:         Chris Taylor
     Website:        labtechconsulting.com
     Creation Date:  3/14/2016
@@ -996,17 +1022,28 @@ Function Install-LTService{
     Update Date: 6/11/2020
     Purpose/Change: Update to work with or without Deployment.aspx
 
+    Update Date: 6/20/2020
+    Purpose/Change: Added -InstallerToken parameter. Added Installer cleanup.
+    Allows for MSI download and installation without -ServerPassword parameter
+    Remove unprotected references to the Server Password
+
 .LINK
     http://labtechconsulting.com
 #>
-    [CmdletBinding(SupportsShouldProcess=$True)]
+    [CmdletBinding(SupportsShouldProcess=$True,DefaultParameterSetName = 'deployment')]
     Param(
+        [Parameter(ParameterSetName = 'deployment')]
+        [Parameter(ParameterSetName = 'installertoken')]
         [Parameter(ValueFromPipelineByPropertyName = $true, Mandatory=$True)]
         [string[]]$Server,
+        [Parameter(ParameterSetName = 'deployment')]
         [Parameter(ValueFromPipelineByPropertyName = $True)]
         [AllowNull()]
         [Alias("Password")]
         [string]$ServerPassword,
+        [Parameter(ParameterSetName = 'installertoken')]
+        [ValidatePattern('(?s:^[0-9a-z]+$)')]
+        [string]$InstallerToken,
         [Parameter(ValueFromPipelineByPropertyName = $True)]
         [AllowNull()]
         [int]$LocationID,
@@ -1066,9 +1103,9 @@ Function Install-LTService{
                 }
                 ElseIf ([version]$OSVersion -gt [version]'6.1'){
                     If ( $PSCmdlet.ShouldProcess("NetFx3", "Add Windows Feature") ) {
-                        Try {$Result=& "$env:windir\system32\Dism.exe" /English /NoRestart /Online /Enable-Feature /FeatureName:NetFx3 2>''}
+                        Try {$Result=& "${env:windir}\system32\Dism.exe" /English /NoRestart /Online /Enable-Feature /FeatureName:NetFx3 2>''}
                         Catch {Write-Output "Error calling Dism.exe."; $Result=$Null}
-                        Try {$Result=& "$env:windir\system32\Dism.exe" /English /Online /Get-FeatureInfo /FeatureName:NetFx3 2>''}
+                        Try {$Result=& "${env:windir}\system32\Dism.exe" /English /Online /Get-FeatureInfo /FeatureName:NetFx3 2>''}
                         Catch {Write-Output "Error calling Dism.exe."; $Result=$Null}
                         If ($Result -contains 'State : Enabled'){
                             Write-Warning "WARNING: Line $(LINENUM): .Net Framework 3.5 has been installed and enabled."
@@ -1097,23 +1134,25 @@ Function Install-LTService{
             }#End If
         }#End If
 
-        $logpath = [System.Environment]::ExpandEnvironmentVariables("%windir%\temp\LabTech")
+        $InstallBase="${env:WINDIR}\Temp\LabTech"
+        $InstallMSI='Agent_Install.msi'
         $logfile = "LTAgentInstall"
-        $curlog = "$($logpath)\$($logfile).log"
-        If (-not (Test-Path -PathType Container -Path "$logpath\Installer" )){
-            New-Item "$logpath\Installer" -type directory -ErrorAction SilentlyContinue | Out-Null
+        $curlog = "$($InstallBase)\$($logfile).log"
+        If (-not (Test-Path -PathType Container -Path "$InstallBase\Installer" )){
+            New-Item "$InstallBase\Installer" -type directory -ErrorAction SilentlyContinue | Out-Null
         }#End if
         If ((Test-Path -PathType Leaf -Path $($curlog))){
             If ($PSCmdlet.ShouldProcess("$($curlog)","Rotate existing log file")){
-                $curlog = Get-Item -Path $curlog -EA 0
-                Rename-Item -Path $($curlog|Select-Object -Expand FullName -EA 0) -NewName "$($logfile)-$(Get-Date $($curlog|Select-Object -Expand LastWriteTime -EA 0) -Format 'yyyyMMddHHmmss').log" -Force -Confirm:$False -WhatIf:$False
-                Remove-Item -Path $($curlog|Select-Object -Expand FullName -EA 0) -Force -EA 0 -Confirm:$False -WhatIf:$False
+                Get-Item -LiteralPath $curlog -EA 0 | Where-Object {$_} | Foreach-Object {
+                    Rename-Item -Path $($_|Select-Object -Expand FullName -EA 0) -NewName "$($logfile)-$(Get-Date $($_|Select-Object -Expand LastWriteTime -EA 0) -Format 'yyyyMMddHHmmss').log" -Force -Confirm:$False -WhatIf:$False
+                    Remove-Item -Path $($_|Select-Object -Expand FullName -EA 0) -Force -EA 0 -Confirm:$False -WhatIf:$False
+                }#End Foreach-Object
             }#End If
         }#End If
     }#End Begin
 
     Process{
-        If (-not ($LocationID)){
+        If (-not ($LocationID -or $PSCmdlet.ParameterSetName -eq 'installertoken')){
             $LocationID = "1"
         }
         If (-not ($TrayPort) -or -not ($TrayPort -ge 1 -and $TrayPort -le 65535)){
@@ -1125,75 +1164,66 @@ Function Install-LTService{
                 If ($Svr -match '^(https?://)?(([12]?[0-9]{1,2}\.){3}[12]?[0-9]{1,2}|[a-z0-9][a-z0-9_-]*(\.[a-z0-9][a-z0-9_-]*)*)$') {
                     If ($Svr -notmatch 'https?://.+') {$Svr = "http://$($Svr)"}
                     Try {
-                        $SvrVerCheck = "$($Svr)/Labtech/Agent.aspx"
-                        Write-Debug "Line $(LINENUM): Testing Server Response and Version: $SvrVerCheck"
-                        $SvrVer = $Script:LTServiceNetWebClient.DownloadString($SvrVerCheck)
-                        Write-Debug "Line $(LINENUM): Raw Response: $SvrVer"
-                        $SVer = $SvrVer|select-string -pattern '(?<=[|]{6})[0-9]{1,3}\.[0-9]{1,3}'|ForEach-Object {$_.matches}|Select-Object -Expand value -EA 0
-                        If ($Null -eq $SVer) {
-                            Write-Verbose "Unable to test version response from $($Svr)."
-                            Continue
-                        }
-                        If ([System.Version]$SVer -ge [System.Version]'110.374') {
-                            #New Style Download Link starting with LT11 Patch 13 - Direct Location Targeting is no longer available
-                            $installer = "$($Svr)/Labtech/Deployment.aspx?Probe=1&installType=msi&MSILocations=1"
+                        If ($PSCmdlet.ParameterSetName -eq 'installertoken') {
+                            Write-Debug "Line $(LINENUM): Skipping Server Version Check. Using Installer Token for download."
+                            $installer = "$($Svr)/LabTech/Deployment.aspx?InstallerToken=$InstallerToken"
                         } Else {
-                            #Original URL
-                            Write-Warning 'Update your damn server!'
-                            $installer = "$($Svr)/Labtech/Deployment.aspx?Probe=1&installType=msi&MSILocations=$LocationID"
-                        }
+                            $SvrVerCheck = "$($Svr)/LabTech/Agent.aspx"
+                            Write-Debug "Line $(LINENUM): Testing Server Response and Version: $SvrVerCheck"
+                            $SvrVer = $Script:LTServiceNetWebClient.DownloadString($SvrVerCheck)
+                            Write-Debug "Line $(LINENUM): Raw Response: $SvrVer"
+                            $SVer = $SvrVer|select-string -pattern '(?<=[|]{6})[0-9]{1,3}\.[0-9]{1,3}'|ForEach-Object {$_.matches}|Select-Object -Expand value -EA 0
+                            If ($Null -eq $SVer) {
+                                Write-Verbose "Unable to test version response from $($Svr)."
+                                Continue
+                            }
+                            If ([System.Version]$SVer -ge [System.Version]'110.374') {
+                                #New Style Download Link starting with LT11 Patch 13 - Direct Location Targeting is no longer available
+                                $installer = "$($Svr)/LabTech/Deployment.aspx?Probe=1&installType=msi&MSILocations=1"
+                            } Else {
+                                #Original URL
+                                Write-Warning 'Update your damn server!'
+                                $installer = "$($Svr)/LabTech/Deployment.aspx?Probe=1&installType=msi&MSILocations=$LocationID"
+                            }
 
-                        # Vuln test June 10, 2020: ConnectWise Automate API Vulnerability
-                        Try{
-                            $HTTP_Request = [System.Net.WebRequest]::Create("$($Svr)/Labtech/Deployment.aspx")
-                            If ($HTTP_Request.GetResponse().StatusCode -eq 'OK') {
-                                If ([System.Version]$SVer -lt [System.Version]'200.197') {
-                                    $Message = @('Your server is vulnerable!!')
-                                    $Message += 'https://docs.connectwise.com/ConnectWise_Automate/ConnectWise_Automate_Supportability_Statements/Supportability_Statement%3A_ConnectWise_Automate_Mitigation_Steps'
-                                    Write-Warning $($Message | Out-String)
+                            # Vuln test June 10, 2020: ConnectWise Automate API Vulnerability - Only test if version is below known minimum.
+                            Try{
+                                If ([System.Version]$SVer -lt [System.Version]'200.197') { 
+                                    $HTTP_Request = [System.Net.WebRequest]::Create("$($Svr)/LabTech/Deployment.aspx")
+                                    If ($HTTP_Request.GetResponse().StatusCode -eq 'OK') {
+                                        $Message = @('Your server is vulnerable!!')
+                                        $Message += 'https://docs.connectwise.com/ConnectWise_Automate/ConnectWise_Automate_Supportability_Statements/Supportability_Statement%3A_ConnectWise_Automate_Mitigation_Steps'
+                                        Write-Warning $($Message | Out-String)
+                                    }
                                 }
                             }
-                        }
-                        Catch {
-                            If (!$ServerPassword) {
-                                Write-Error 'ServerPassword needed.'
-                                Break
+                            Catch {
+                                If (!$ServerPassword) {
+                                    Write-Error 'ServerPassword needed.'
+                                    Break
+                                }
                             }
-                        }
-                        If ($ServerPassword) { $installer = "$($Svr)/LabTech/Service/LabTechRemoteAgent.msi" }
-
-                        $installerTest = [System.Net.WebRequest]::Create($installer)
-                        If (($Script:LTProxy.Enabled) -eq $True) {
-                            Write-Debug "Line $(LINENUM): Proxy Configuration Needed. Applying Proxy Settings to request."
-                            $installerTest.Proxy=$Script:LTWebProxy
+                            If ($ServerPassword) { $installer = "$($Svr)/LabTech/Service/LabTechRemoteAgent.msi" }
                         }#End If
-                        $installerTest.KeepAlive=$False
-                        $installerTest.ProtocolVersion = '1.0'
-                        $installerResult = $installerTest.GetResponse()
-                        $installerTest.Abort()
-                        If ($installerResult.StatusCode -ne 200) {
-                            Write-Warning "WARNING: Line $(LINENUM): Unable to download Agent_Install from server $($Svr)."
-                            Continue
-                        } Else {
-                            If ( $PSCmdlet.ShouldProcess($installer, "DownloadFile") ) {
-                                Write-Debug "Line $(LINENUM): Downloading Agent_Install.msi from $installer"
-                                $Script:LTServiceNetWebClient.DownloadFile($installer,"$env:windir\temp\LabTech\Installer\Agent_Install.msi")
-                                If((Test-Path "$env:windir\temp\LabTech\Installer\Agent_Install.msi") -and  !((Get-Item "$env:windir\temp\LabTech\Installer\Agent_Install.msi" -EA 0).length/1KB -gt 1234)) {
-                                    Write-Warning "WARNING: Line $(LINENUM): Agent_Install.msi size is below normal. Removing suspected corrupt file."
-                                    Remove-Item "$env:windir\temp\LabTech\Installer\Agent_Install.msi" -ErrorAction SilentlyContinue -Force -Confirm:$False
-                                    Continue
-                                }#End If
-                            }#End If
 
-                            If ($WhatIfPreference -eq $True) {
-                                $GoodServer = $Svr
-                            } ElseIf (Test-Path "$env:windir\temp\LabTech\Installer\Agent_Install.msi") {
-                                $GoodServer = $Svr
-                                Write-Verbose "Agent_Install.msi downloaded successfully from server $($Svr)."
-                            } Else {
-                                Write-Warning "WARNING: Line $(LINENUM): Error encountered downloading from $($Svr). No installation file was received."
+                        If ( $PSCmdlet.ShouldProcess($installer, "DownloadFile") ) {
+                            Write-Debug "Line $(LINENUM): Downloading $InstallMSI from $installer"
+                            $Script:LTServiceNetWebClient.DownloadFile($installer,"$InstallBase\Installer\$InstallMSI")
+                            If((Test-Path "$InstallBase\Installer\$InstallMSI") -and  !((Get-Item "$InstallBase\Installer\$InstallMSI" -EA 0).length/1KB -gt 1234)) {
+                                Write-Warning "WARNING: Line $(LINENUM): $InstallMSI size is below normal. Removing suspected corrupt file."
+                                Remove-Item "$InstallBase\Installer\$InstallMSI" -ErrorAction SilentlyContinue -Force -Confirm:$False
                                 Continue
                             }#End If
+                        }#End If
+
+                        If ($WhatIfPreference -eq $True) {
+                            $GoodServer = $Svr
+                        } ElseIf (Test-Path "$InstallBase\Installer\$InstallMSI") {
+                            $GoodServer = $Svr
+                            Write-Verbose "$InstallMSI downloaded successfully from server $($Svr)."
+                        } Else {
+                            Write-Warning "WARNING: Line $(LINENUM): Error encountered downloading from $($Svr). No installation file was received."
+                            Continue
                         }#End If
                     }#End Try
                     Catch {
@@ -1211,15 +1241,12 @@ Function Install-LTService{
     }#End Process
 
     End{
-        If (($ServerPassword)){
-            $PasswordArg = "SERVERPASS=$ServerPassword"
-        }
         If ($GoodServer) {
 
             If ( $WhatIfPreference -eq $True -and (Get-PSCallStack)[1].Command -eq 'Redo-LTService' ) {
                 Write-Debug "Line $(LINENUM): Skipping Preinstall Check: Called by Redo-LTService and ""-WhatIf=`$True"""
             } Else {
-                If ((Test-Path "$($env:windir)\ltsvc" -EA 0) -or (Test-Path "$($env:windir)\temp\_ltupdate" -EA 0) -or (Test-Path registry::HKLM\Software\LabTech\Service -EA 0) -or (Test-Path registry::HKLM\Software\WOW6432Node\Labtech\Service -EA 0)){
+                If ((Test-Path "${env:windir}\ltsvc" -EA 0) -or (Test-Path "${env:windir}\temp\_ltupdate" -EA 0) -or (Test-Path registry::HKLM\Software\LabTech\Service -EA 0) -or (Test-Path registry::HKLM\Software\WOW6432Node\Labtech\Service -EA 0)){
                     Write-Warning "WARNING: Line $(LINENUM): Previous installation detected. Calling Uninstall-LTService"
                     Uninstall-LTService -Server $GoodServer -Force
                     Start-Sleep 10
@@ -1246,7 +1273,15 @@ Function Install-LTService{
                 Write-Output "Starting Install."
             }#End If
 
-            $iarg = "/i ""$env:windir\temp\LabTech\Installer\Agent_Install.msi"" SERVERADDRESS=$GoodServer $PasswordArg LOCATION=$LocationID SERVICEPORT=$TrayPort /qn /l ""$logpath\$logfile.log"""
+            #Build parameter string
+            $iarg =(@(
+                "/i `"$InstallBase\Installer\$InstallMSI`"",
+                "SERVERADDRESS=$GoodServer",
+                $(If ($ServerPassword -and $ServerPassword -match '.') {"SERVERPASS=""$ServerPassword"""} Else {""}),
+                $(If ($LocationID -and $LocationID -match '^\d+$') {"LOCATION=$LocationID"} Else {""}),
+                $(If ($TrayPort -and $TrayPort -ne 42000) {"SERVICEPORT=$TrayPort"} Else {""}),
+                "/qn",
+                "/l ""$InstallBase\$logfile.log""") | Where-Object {$_}) -join ' '
 
             Try{
                 If ( $PSCmdlet.ShouldProcess("msiexec.exe $($iarg)", "Execute Install") ) {
@@ -1265,8 +1300,8 @@ Function Install-LTService{
                         $InstallAttempt++
                         $svcRun = ('LTService') | Get-Service -EA 0 | Measure-Object | Select-Object -Expand Count
                         If ($svcRun -eq 0) {
-                            Write-Verbose "Launching Installation Process: msiexec.exe $(($iarg))"
-                            Start-Process -Wait -FilePath "$env:windir\system32\msiexec.exe" -ArgumentList $iarg -WorkingDirectory $env:TEMP
+                            Write-Verbose "Launching Installation Process: msiexec.exe $(($iarg -join ''))"
+                            Start-Process -Wait -FilePath "${env:windir}\system32\msiexec.exe" -ArgumentList $iarg -WorkingDirectory ${env:TEMP}
                             Start-Sleep 5
                         }
                         $svcRun = ('LTService') | Get-Service -EA 0 | Measure-Object | Select-Object -Expand Count
@@ -1324,7 +1359,17 @@ Function Install-LTService{
                 Return
             }#End Catch
 
-            If ( $WhatIfPreference -ne $True ) {
+            If ($WhatIfPreference -ne $True) {
+                #Cleanup Install files
+                Remove-Item "$InstallBase\Installer\$InstallMSI" -ErrorAction SilentlyContinue -Force -Confirm:$False
+                @($curlog,"${env:windir}\LTSvc\Install.log") | Foreach-Object {
+                    If ((Test-Path -PathType Leaf -LiteralPath $($_))) {
+                        $logcontents=Get-Content -Path $_
+                        $logcontents=$logcontents -replace '(?<=PreInstallPass:[^\r\n]+? (?:result|value)): [^\r\n]+',': <REDACTED>'
+                        If ($logcontents) {Set-Content -Path $_ -Value $logcontents -Force -Confirm:$False}
+                    }#End If
+                }#End Foreach-Object
+
                 $tmpLTSI = Get-LTServiceInfo -EA 0 -Verbose:$False -WhatIf:$False -Confirm:$False -Debug:$False
                 If (($tmpLTSI)) {
                     If (($tmpLTSI|Select-Object -Expand 'ID' -EA 0) -ge 1) {
@@ -1336,10 +1381,10 @@ Function Install-LTService{
                     }#End If
                 } Else {
                     If (($Error)) {
-                        Write-Error "ERROR: Line $(LINENUM): There was an error installing LabTech. Check the log, $($env:windir)\temp\LabTech\LTAgentInstall.log $($Error[0])"
+                        Write-Error "ERROR: Line $(LINENUM): There was an error installing LabTech. Check the log, $InstallBase\$logfile.log $($Error[0])"
                         Return
                     } ElseIf (!($NoWait)) {
-                        Write-Error "ERROR: Line $(LINENUM): There was an error installing LabTech. Check the log, $($env:windir)\temp\LabTech\LTAgentInstall.log"
+                        Write-Error "ERROR: Line $(LINENUM): There was an error installing LabTech. Check the log, $InstallBase\$logfile.log"
                         Return
                     } Else {
                         Write-Warning "WARNING: Line $(LINENUM): LabTech installation may not have succeeded." -WarningAction Continue
@@ -1370,9 +1415,12 @@ Function Redo-LTService{
     If no server is provided the uninstaller will use Get-LTServiceInfo to get the server address.
     If it is unable to find LT currently installed it will try Get-LTServiceInfoBackup
 
-.PARAMETER Password
+.PARAMETER ServerPassword
     This is the Server Password to your LabTech server.
     SELECT SystemPassword FROM config;
+
+.PARAMETER InstallerToken
+    Permits use of installer tokens for customized MSI downloads. (Other installer types are not supported)
 
 .PARAMETER LocationID
     The LocationID of the location that you want the agent in
@@ -1402,7 +1450,7 @@ Function Redo-LTService{
     This will ReInstall the LabTech agent using the provided server URL to download the installation files.
 
 .NOTES
-    Version:        1.5
+    Version:        1.6
     Author:         Chris Taylor
     Website:        labtechconsulting.com
     Creation Date:  3/14/2016
@@ -1428,17 +1476,28 @@ Function Redo-LTService{
     Update Date: 2/22/2019
     Purpose/Change: Added -SkipDotNet parameter.
     Allows for skipping of .NET 3.5 and 2.0 framework checks for installing on OS with .NET 4.0+ already installed
+
+    Update Date: 6/20/2020
+    Purpose/Change: Added -InstallerToken parameter.
+    Allows for MSI download and installation without -ServerPassword parameter
+
 .LINK
     http://labtechconsulting.com
 #>
-    [CmdletBinding(SupportsShouldProcess=$True)]
+    [CmdletBinding(SupportsShouldProcess=$True,DefaultParameterSetName = 'deployment')]
     Param(
+        [Parameter(ParameterSetName = 'deployment')]
+        [Parameter(ParameterSetName = 'installertoken')]
         [Parameter(ValueFromPipelineByPropertyName = $True, ValueFromPipeline=$True)]
         [AllowNull()]
         [string[]]$Server,
+        [Parameter(ParameterSetName = 'deployment')]
         [Parameter(ValueFromPipelineByPropertyName = $True, ValueFromPipeline=$True)]
         [Alias("Password")]
         [string]$ServerPassword,
+        [Parameter(ParameterSetName = 'installertoken')]
+        [ValidatePattern('(?s:^[0-9a-z]+$)')]
+        [string]$InstallerToken,
         [Parameter(ValueFromPipelineByPropertyName = $True)]
         [AllowNull()]
         [string]$LocationID,
@@ -1518,8 +1577,9 @@ Function Redo-LTService{
             $RenameArg = "-Rename $Rename"
         }
 
-        If (($ServerPassword)){
-            $PasswordArg = "-Password '$ServerPassword'"
+        If ($PSCmdlet.ParameterSetName -eq 'installertoken') {
+            $PasswordPresent = "-InstallerToken 'REDACTED'"
+        } ElseIf (($ServerPassword)){
             $PasswordPresent = "-Password 'REDACTED'"
         }
 
@@ -1542,7 +1602,11 @@ Function Redo-LTService{
 
         Write-Verbose "Starting: Install-LTService -Server $($ServerList -join ',') $PasswordPresent -LocationID $LocationID -Hide:`$$($Hide) $RenameArg"
         Try{
-            Install-LTService -Server $ServerList -ServerPassword $ServerPassword -LocationID $LocationID -Hide:$Hide -Rename $Rename -SkipDotNet:$SkipDotNet -Force
+            If ($PSCmdlet.ParameterSetName -ne 'installertoken') {
+                Install-LTService -Server $ServerList -ServerPassword $ServerPassword -LocationID $LocationID -Hide:$Hide -Rename $Rename -SkipDotNet:$SkipDotNet -Force
+            } Else {
+                Install-LTService -Server $ServerList -InstallerToken $InstallerToken -LocationID $LocationID -Hide:$Hide -Rename $Rename -SkipDotNet:$SkipDotNet -Force
+            }
         }#End Try
 
         Catch{
@@ -1621,7 +1685,7 @@ Function Update-LTService{
                 If ($Svr -match '^(https?://)?(([12]?[0-9]{1,2}\.){3}[12]?[0-9]{1,2}|[a-z0-9][a-z0-9_-]*(\.[a-z0-9][a-z0-9_-]*)*)$') {
                     If ($Svr -notmatch 'https?://.+') {$Svr = "http://$($Svr)"}
                     Try {
-                        $SvrVerCheck = "$($Svr)/Labtech/Agent.aspx"
+                        $SvrVerCheck = "$($Svr)/LabTech/Agent.aspx"
                         Write-Debug "Line $(LINENUM): Testing Server Response and Version: $SvrVerCheck"
                         $SvrVer = $Script:LTServiceNetWebClient.DownloadString($SvrVerCheck)
                         Write-Debug "Line $(LINENUM): Raw Response: $SvrVer"
@@ -1631,11 +1695,11 @@ Function Update-LTService{
                             Continue
                         }
                         If ($Version -match '[1-9][0-9]{2}\.[0-9]{1,3}') {
-                            $updater = "$($Svr)/Labtech/Updates/LabtechUpdate_$($Version).zip"
+                            $updater = "$($Svr)/LabTech/Updates/LabtechUpdate_$($Version).zip"
                         } ElseIf ([System.Version]$SVer -ge [System.Version]'105.001') {
                             $Version = $SVer
                             Write-Verbose "Using detected version ($Version) from server: $($Svr)."
-                            $updater = "$($Svr)/Labtech/Updates/LabtechUpdate_$($Version).zip"
+                            $updater = "$($Svr)/LabTech/Updates/LabtechUpdate_$($Version).zip"
                         }
 
                         #Kill all running processes from $updaterPath
@@ -3034,21 +3098,27 @@ Function ConvertFrom-LTSecurity{
     This forces the function to try alternate key values if decoding fails using provided key.
 
 .NOTES
-    Version:        1.1
+    Version:        1.2
     Author:         Darren White
     Creation Date:  1/25/2018
     Purpose/Change: Initial function development
 
+    Update Date: 6/25/2020
+    Purpose/Change: Improved pipeline and parameter handling
+
 .LINK
     http://labtechconsulting.com
 #>
+[CmdletBinding(SupportsShouldProcess=$True)]
 Param(
     [parameter(Mandatory = $true, ValueFromPipeline = $True, ValueFromPipelineByPropertyName = $True, Position = 1)]
     [string[]]$InputString,
 
     [parameter(Mandatory = $false, ValueFromPipeline = $false, ValueFromPipelineByPropertyName = $True)]
     [AllowNull()]
-    [string[]]$Key,
+    [AllowEmptyString()]
+    [AllowEmptyCollection()]
+    $Key = $Null,
 
     [parameter(Mandatory = $false, ValueFromPipeline = $false, ValueFromPipelineByPropertyName = $false)]
     [switch]$Force=$True
@@ -3139,60 +3209,71 @@ Function ConvertTo-LTSecurity{
     This is the key used for encoding. If not provided, a default value will be used.
 
 .NOTES
-    Version:        1.1
+    Version:        1.2
     Author:         Darren White
     Creation Date:  1/25/2018
     Purpose/Change: Initial function development
 
+    Update Date: 6/23/2020
+    Purpose/Change: Improved pipeline and parameter handling
+    
 .LINK
     http://labtechconsulting.com
 #>
+[CmdletBinding(SupportsShouldProcess=$True)]
 Param(
-    [parameter(Mandatory = $true, ValueFromPipeline = $false, ValueFromPipelineByPropertyName = $false)]
+    [parameter(Mandatory = $true, ValueFromPipeline = $true, ValueFromPipelineByPropertyName = $true, Position = 1)]
     [AllowNull()]
     [AllowEmptyString()]
     [AllowEmptyCollection()]
-    [string]$InputString,
-
-    [parameter(Mandatory = $false, ValueFromPipeline = $false, ValueFromPipelineByPropertyName = $false)]
+    [string[]]$InputString,
+    [parameter(Mandatory = $false, ValueFromPipeline = $false, ValueFromPipelineByPropertyName = $true)]
     [AllowNull()]
     [AllowEmptyString()]
     [AllowEmptyCollection()]
-    $Key
+    $Key = $Null
 )
 
     Begin {
         $_initializationVector = [byte[]](240, 3, 45, 29, 0, 76, 173, 59)
         $DefaultKey='Thank you for using LabTech.'
-
-        If ($Null -eq $Key) {
-            $Key=$DefaultKey
-        }#End If
-
-        try {
-            $numarray=[System.Text.Encoding]::UTF8.GetBytes($InputString)
-        } catch {
-            try { $numarray=[System.Text.Encoding]::ASCII.GetBytes($InputString) } catch {}
-        }
-        Write-Debug "Line $(LINENUM): Attempting Encode for '$($testInput)' with Key '$($testKey)'"
-        try {
-            $ddd = new-object System.Security.Cryptography.TripleDESCryptoServiceProvider
-            $ddd.key=(new-Object Security.Cryptography.MD5CryptoServiceProvider).ComputeHash([Text.Encoding]::UTF8.GetBytes($Key))
-            $ddd.IV=$_initializationVector
-            $dd=$ddd.CreateEncryptor()
-            $str=[System.Convert]::ToBase64String($dd.TransformFinalBlock($numarray,0,($numarray.Length)))
-        }
-        catch {
-            Write-Debug "Line $(LINENUM): Failed to Encode string: '$($InputString)'"
-            $str=''
-        }
-        Finally
-        {
-            if ($dd) {try {$dd.Dispose()} catch {$dd.Clear()}}
-            if ($ddd) {try {$ddd.Dispose()} catch {$ddd.Clear()}}
-        }
-        return $str
+        $str=@()
     }#End Begin
+
+    Process {
+        foreach ($testInput in $InputString) {
+            If ($Null -eq $Key) {
+                $Key=$DefaultKey
+            }#End If
+
+            try {
+                $numarray=[System.Text.Encoding]::UTF8.GetBytes($testInput)
+            } catch {
+                try { $numarray=[System.Text.Encoding]::ASCII.GetBytes($testInput) } catch {}
+            }
+            Write-Debug "Line $(LINENUM): Attempting Encode for '$($testInput)' with Key '$($Key)'"
+            try {
+                $ddd = new-object System.Security.Cryptography.TripleDESCryptoServiceProvider
+                $ddd.key=(new-Object Security.Cryptography.MD5CryptoServiceProvider).ComputeHash([Text.Encoding]::UTF8.GetBytes($Key))
+                $ddd.IV=$_initializationVector
+                $dd=$ddd.CreateEncryptor()
+                $str+=[System.Convert]::ToBase64String($dd.TransformFinalBlock($numarray,0,($numarray.Length)))
+            }
+            catch {
+                Write-Debug "Line $(LINENUM): Failed to Encode string: '$($InputString)'"
+                $str+=''
+            }
+            Finally
+            {
+                if ($dd) {try {$dd.Dispose()} catch {$dd.Clear()}}
+                if ($ddd) {try {$ddd.Dispose()} catch {$ddd.Clear()}}
+            }
+        }#End ForEach
+    }#End Process
+
+    End {
+        return $str
+    }#End End
 }#End Function ConvertTo-LTSecurity
 
 Function Set-LTProxy{
@@ -3642,3 +3723,16 @@ If (($MyInvocation.Line -match 'Import-Module' -or $MyInvocation.MyCommand -matc
 }
 
 $Null=Initialize-LTServiceModule
+
+#SneakyRun - Save as FUNCTION.ps1 and call FUNCTION.ps1, and it will be treated as if you called FUNCTION directly.
+#Maybe it's not that special. You can dot-source the script and call any function directly.  
+#Example: Name it "Install-LTService.ps1", then you can call it as the file and it will run that function.
+if ($PSCommandPath -like '*.ps1' -and $PSCommandPath -like "*$($MyInvocation.MyCommand)") {
+    $LabTechFunction=$MyInvocation.MyCommand.ToString() -replace '\.ps1',''
+    If ($PublicFunctions -contains $LabTechFunction) {
+        Write-Debug "Script Name $LabTechFunction.ps1 matches a defined function. Calling $LabTechFunction $($args|ConvertTo-JSON -Depth 1 -Compress)"
+        & $LabTechFunction @args
+    } Else {
+        Write-Debug "Script Name $LabTechFunction.ps1 does not match a defined function for this module."
+    }
+}
