@@ -11,7 +11,7 @@
     Tested Versions: v10.5, v11, v12, v2019
 
 .NOTES
-    Version:        1.8
+    Version:        1.9.0
     Author:         Chris Taylor
     Website:        labtechconsulting.com
     Creation Date:  3/14/2016
@@ -21,7 +21,7 @@
     Purpose/Change: Updates for better overall compatibility, including better support for PowerShell V2
 
     Update Date: 1/23/2018
-    Purpose/Change: Updates to address 32-bit vs. 64-bit operations.
+    Purpose/Change: Updates to address 32-bit vs. 64-bit environments
 
     Update Date: 2/1/2018
     Purpose/Change: Updates for support of Proxy Settings. Enabled -WhatIf processing for many functions.
@@ -34,60 +34,127 @@
 
     Update Date: 2/26/2019
     Purpose/Change: Update to support 32-bit execution in 64-bit OS without SYSNATIVE redirection
+
+    Update Date: 9/9/2020
+    Purpose/Change: Update to support 64-bit OS without SYSNATIVE redirection (ARM64)
 #>
 
 if (-not ($PSVersionTable)) {Write-Warning 'PS1 Detected. PowerShell Version 2.0 or higher is required.';return}
 if (-not ($PSVersionTable) -or $PSVersionTable.PSVersion.Major -lt 3 ) {Write-Verbose 'PS2 Detected. PowerShell Version 3.0 or higher may be required for full functionality.'}
 
 #Module Version
-$ModuleVersion = "1.8"
+$ModuleVersion = "1.9.0"
 $ModuleGuid='f1f06c84-00c8-11ea-b6e8-000c29aaa7df'
 
 If ($env:PROCESSOR_ARCHITEW6432 -match '64' -and [IntPtr]::Size -ne 8) {
     Write-Warning '32-bit PowerShell session detected on 64-bit OS. Attempting to launch 64-Bit session to process commands.'
-    $pshell="${env:WINDIR}\sysnative\windowspowershell\v1.0\powershell.exe"
-    If (!(Test-Path -Path $pshell)) {
-        Write-Warning 'SYSNATIVE PATH REDIRECTION IS NOT AVAILABLE. Attempting to access 64-bit PowerShell directly.'
-        $pshell="${env:WINDIR}\System32\WindowsPowershell\v1.0\powershell.exe"
-        $FSRedirection=$True
-        Add-Type -Debug:$False -Name Wow64 -Namespace "Kernel32" -MemberDefinition @"
+    $pshell="${env:windir}\SysNative\WindowsPowershell\v1.0\powershell.exe"
+    If (!(Test-Path -Path $pshell) -or $env:PROCESSOR_ARCHITEW6432 -eq 'ARM64') {
+        Write-Debug 'SYSNATIVE PATH REDIRECTION IS NOT AVAILABLE. Attempting to disable System32 path redirection for native 64bit access.'
+        $pshell="${env:windir}\System32\WindowsPowershell\v1.0\powershell.exe"
+
+        If ($Null -eq ([System.Management.Automation.PSTypeName]'System.Win32').Type -or $Null -eq [system.win32].GetMethod('GetFinalPathName')) {
+            Add-Type -Name Win32 -NameSpace System -UsingNamespace System.Text,Microsoft.Win32.SafeHandles,System.ComponentModel -Debug:$False -MemberDefinition @"
+private const int CREATION_DISPOSITION_OPEN_EXISTING = 3;
+private const int FILE_FLAG_BACKUP_SEMANTICS = 0x02000000;
+
+[DllImport("kernel32.dll", EntryPoint = "GetFinalPathNameByHandleW", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern int GetFinalPathNameByHandle(IntPtr handle, [In, Out] StringBuilder path, int bufLen, int flags);
+
+[DllImport("kernel32.dll", EntryPoint = "CreateFileW", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern SafeFileHandle CreateFile(string lpFileName, int dwDesiredAccess, int dwShareMode,
+    IntPtr SecurityAttributes, int dwCreationDisposition, int dwFlagsAndAttributes, IntPtr hTemplateFile);
+
+    public static string GetFinalPathName(System.IO.DirectoryInfo targetpath)
+    {
+        SafeFileHandle directoryHandle = CreateFile(targetpath.FullName, 0, 2, System.IntPtr.Zero, CREATION_DISPOSITION_OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, System.IntPtr.Zero);
+        if(directoryHandle.IsInvalid)
+        {
+            throw new Win32Exception(Marshal.GetLastWin32Error());
+        }
+        StringBuilder path = new StringBuilder(512);
+        int size = GetFinalPathNameByHandle(directoryHandle.DangerousGetHandle(), path, path.Capacity, 0);
+        if (size<0)
+        {
+            throw new Win32Exception(Marshal.GetLastWin32Error());
+        }
+        // The remarks section of GetFinalPathNameByHandle mentions the return being prefixed with "\\?\"
+        // More information about "\\?\" here -> http://msdn.microsoft.com/en-us/library/aa365247(v=VS.85).aspx
+        string sPath = path.ToString();
+        if( sPath.Length>8 && sPath.Substring(0,8) == @"\\?\UNC\" )
+        {
+            return @"\" + sPath.Substring(7);
+        }
+        else if( sPath.Length>4 && sPath.Substring(0,4) == @"\\?\" )
+        {
+            return sPath.Substring(4);
+        }
+        else
+        {
+            return sPath;
+        }
+    }
+"@
+        }#End If
+
+        $System32Dir=Get-Item "${env:SystemRoot}\System32"
+        $System32DirActual=[System.Win32]::GetFinalPathName($System32Dir)
+
+        If (!($System32DirActual -eq $System32Dir.FullName)) {
+
+            If ($Null -eq ([System.Management.Automation.PSTypeName]'Kernel32.Wow64').Type -or $Null -eq [Kernel32.Wow64].GetMethod('Wow64DisableWow64FsRedirection')) {
+                Write-Debug 'Loading WOW64Redirection functions'
+
+                Add-Type -Name Wow64 -Namespace Kernel32 -Debug:$False -MemberDefinition @"
 [DllImport("kernel32.dll", SetLastError=true)]
 public static extern bool Wow64DisableWow64FsRedirection(ref IntPtr ptr);
 
 [DllImport("kernel32.dll", SetLastError=true)]
 public static extern bool Wow64RevertWow64FsRedirection(ref IntPtr ptr);
 "@
-        [ref]$ptr = New-Object System.IntPtr
-        $Result = [Kernel32.Wow64]::Wow64DisableWow64FsRedirection($ptr) # Now you can call 64-bit Powershell from system32
-    }
+            }
+
+            Write-Verbose 'System32 path is redirected. Disabling redirection.'
+            [ref]$ptr = New-Object System.IntPtr
+            $Result = [Kernel32.Wow64]::Wow64DisableWow64FsRedirection($ptr)
+            $FSRedirectionDisabled=$True
+        } Else {
+            Write-Debug 'System32 path redirection to SysWOW64 is already disabled.'
+        }#End If
+    }#End If
+
     If ($myInvocation.Line) {
         &"$pshell" -NonInteractive -NoProfile $myInvocation.Line
     } Elseif ($myInvocation.InvocationName) {
         &"$pshell" -NonInteractive -NoProfile -File "$($myInvocation.InvocationName)" $args
     } Else {
         &"$pshell" -NonInteractive -NoProfile $myInvocation.MyCommand
-    }
+    }#End If
     $ExitResult=$LASTEXITCODE
-    If ($FSRedirection -eq $True) {
+
+    If ($Null -ne ([System.Management.Automation.PSTypeName]'Kernel32.Wow64').Type -and $Null -ne [Kernel32.Wow64].GetMethod('Wow64DisableWow64FsRedirection') -and $FSRedirectionDisabled -eq $True) {
         [ref]$defaultptr = New-Object System.IntPtr
         $Result = [Kernel32.Wow64]::Wow64RevertWow64FsRedirection($defaultptr)
-    }
+        Write-Verbose 'System32 path redirection has been re-enabled.'
+    }#End If
     Write-Warning 'Exiting 64-bit session. Module will only remain loaded in native 64-bit PowerShell environment.'
-Exit $ExitResult
+    Exit $ExitResult
 }#End If
 
 #Ignore SSL errors
-Add-Type -Debug:$False @"
-    using System.Net;
-    using System.Security.Cryptography.X509Certificates;
-    public class TrustAllCertsPolicy : ICertificatePolicy {
-        public bool CheckValidationResult(
-            ServicePoint srvPoint, X509Certificate certificate,
-            WebRequest request, int certificateProblem) {
-            return true;
+If ($Null -eq ([System.Management.Automation.PSTypeName]'TrustAllCertsPolicy').Type) {
+    Add-Type -Debug:$False @"
+        using System.Net;
+        using System.Security.Cryptography.X509Certificates;
+        public class TrustAllCertsPolicy : ICertificatePolicy {
+            public bool CheckValidationResult(
+                ServicePoint srvPoint, X509Certificate certificate,
+                WebRequest request, int certificateProblem) {
+                return true;
+            }
         }
-    }
 "@
+}
 [System.Net.ServicePointManager]::CertificatePolicy = New-Object TrustAllCertsPolicy
 #Enable TLS, TLS1.1, TLS1.2, TLS1.3 in this session if they are available
 IF([Net.SecurityProtocolType]::Tls) {[Net.ServicePointManager]::SecurityProtocol=[Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls}
