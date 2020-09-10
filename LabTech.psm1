@@ -117,28 +117,37 @@ public static extern bool Wow64RevertWow64FsRedirection(ref IntPtr ptr);
             Write-Verbose 'System32 path is redirected. Disabling redirection.'
             [ref]$ptr = New-Object System.IntPtr
             $Result = [Kernel32.Wow64]::Wow64DisableWow64FsRedirection($ptr)
-            $FSRedirectionDisabled=$True
+            $System32DirActual=[System.Win32]::GetFinalPathName($System32Dir)
+            If ($System32DirActual -eq $System32Dir.FullName) {
+                $FSRedirectionDisabled=$True
+            } Else {
+                $pshell=$Null
+            }
         } Else {
             Write-Debug 'System32 path redirection to SysWOW64 is already disabled.'
         }#End If
     }#End If
 
-    If ($myInvocation.Line) {
-        &"$pshell" -NonInteractive -NoProfile $myInvocation.Line
-    } Elseif ($myInvocation.InvocationName) {
-        &"$pshell" -NonInteractive -NoProfile -File "$($myInvocation.InvocationName)" $args
-    } Else {
-        &"$pshell" -NonInteractive -NoProfile $myInvocation.MyCommand
-    }#End If
-    $ExitResult=$LASTEXITCODE
+    If ($pshell) {
+        If ($myInvocation.Line) {
+            &"$pshell" -NonInteractive -NoProfile $myInvocation.Line
+        } Elseif ($myInvocation.InvocationName) {
+            &"$pshell" -NonInteractive -NoProfile -File "$($myInvocation.InvocationName)" $args
+        } Else {
+            &"$pshell" -NonInteractive -NoProfile $myInvocation.MyCommand
+        }#End If
+        $ExitResult=$LASTEXITCODE
 
-    If ($Null -ne ([System.Management.Automation.PSTypeName]'Kernel32.Wow64').Type -and $Null -ne [Kernel32.Wow64].GetMethod('Wow64DisableWow64FsRedirection') -and $FSRedirectionDisabled -eq $True) {
-        [ref]$defaultptr = New-Object System.IntPtr
-        $Result = [Kernel32.Wow64]::Wow64RevertWow64FsRedirection($defaultptr)
-        Write-Verbose 'System32 path redirection has been re-enabled.'
-    }#End If
-    Write-Warning 'Exiting 64-bit session. Module will only remain loaded in native 64-bit PowerShell environment.'
-    Exit $ExitResult
+        If ($Null -ne ([System.Management.Automation.PSTypeName]'Kernel32.Wow64').Type -and $Null -ne [Kernel32.Wow64].GetMethod('Wow64DisableWow64FsRedirection') -and $FSRedirectionDisabled -eq $True) {
+            [ref]$defaultptr = New-Object System.IntPtr
+            $Result = [Kernel32.Wow64]::Wow64RevertWow64FsRedirection($defaultptr)
+            Write-Verbose 'System32 path redirection has been re-enabled.'
+        }#End If
+        Write-Warning 'Exiting 64-bit session. Module will only remain loaded in native 64-bit PowerShell environment.'
+        Exit $ExitResult
+    } Else {
+        Write-Warning 'Native 64-bit PowerShell environment unavailable. Execution will continue.'
+    }
 }#End If
 
 #Ignore SSL errors
