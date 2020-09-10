@@ -118,10 +118,14 @@ public static extern bool Wow64RevertWow64FsRedirection(ref IntPtr ptr);
             [ref]$ptr = New-Object System.IntPtr
             $Result = [Kernel32.Wow64]::Wow64DisableWow64FsRedirection($ptr)
             $System32DirActual=[System.Win32]::GetFinalPathName($System32Dir)
-            If ($System32DirActual -eq $System32Dir.FullName) {
-                $FSRedirectionDisabled=$True
-            } Else {
+            If (!($System32DirActual -eq $System32Dir.FullName)) {
                 $pshell=$Null
+                Write-Warning 'Native 64-bit PowerShell environment unavailable. Execution will continue.'
+            } ElseIf ($env:PROCESSOR_ARCHITEW6432 -match 'ARM64') {
+                $pshell=$Null
+                Write-Debug 'Native 64-bit PowerShell environment unavailable in ARM64. Execution will continue.'
+            } Else {
+                $FSRedirectionDisabled=$True
             }
         } Else {
             Write-Debug 'System32 path redirection to SysWOW64 is already disabled.'
@@ -145,8 +149,6 @@ public static extern bool Wow64RevertWow64FsRedirection(ref IntPtr ptr);
         }#End If
         Write-Warning 'Exiting 64-bit session. Module will only remain loaded in native 64-bit PowerShell environment.'
         Exit $ExitResult
-    } Else {
-        Write-Warning 'Native 64-bit PowerShell environment unavailable. Execution will continue.'
     }
 }#End If
 
