@@ -1039,6 +1039,10 @@ Function Install-LTService{
     Allows for MSI download and installation without -ServerPassword parameter
     Remove unprotected references to the Server Password
 
+    Update Date: 1/3/2021
+    Purpose/Change: Escaped double quotes in -ServerPassword parameter
+    Prevents MSI install from hanging perpetually
+
 .LINK
     http://labtechconsulting.com
 #>
@@ -1289,7 +1293,7 @@ Function Install-LTService{
             $iarg =(@(
                 "/i `"$InstallBase\Installer\$InstallMSI`"",
                 "SERVERADDRESS=$GoodServer",
-                $(If ($ServerPassword -and $ServerPassword -match '.') {"SERVERPASS=""$ServerPassword"""} Else {""}),
+                $(If ($ServerPassword -and $ServerPassword -match '.') {"SERVERPASS=`"$($ServerPassword.Replace('"','""'))`""} Else {""}),
                 $(If ($LocationID -and $LocationID -match '^\d+$') {"LOCATION=$LocationID"} Else {""}),
                 $(If ($TrayPort -and $TrayPort -ne 42000) {"SERVICEPORT=$TrayPort"} Else {""}),
                 "/qn",
