@@ -617,6 +617,7 @@ Function Uninstall-LTService{
     )
 
     Begin{
+        $ProgressPreference='SilentlyContinue'
         Clear-Variable Executables,BasePath,reg,regs,installer,installerTest,installerResult,LTSI,uninstaller,uninstallerTest,uninstallerResult,xarg,Svr,SVer,SvrVer,SvrVerCheck,GoodServer,AlternateServer,Item -EA 0 -WhatIf:$False -Confirm:$False #Clearing Variables for use
         Write-Debug "Starting $($myInvocation.InvocationName) at line $(LINENUM)"
 
@@ -644,6 +645,15 @@ Function Uninstall-LTService{
         $UninstallBase="${env:windir}\Temp"
         $UninstallEXE='Agent_Uninstall.exe'
         $UninstallMSI='RemoteAgent.msi'
+
+        if (Test-Path -Path $UninstallBase) {
+                (taskkill.exe /f /im uninstall.exe) 2>&1 3>&1 1>$null
+                (taskkill.exe /f /im Agent_Uninstall.exe) 2>&1 3>&1 1>$null
+                Get-ChildItem -Path $UninstallBase -Recurse -Force -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -in @('Uninstall.exe', 'Uninstall.exe.config','Agent_Uninstall.exe') } |
+                Remove-Item -Force -ErrorAction SilentlyContinue -WhatIf:$False -Confirm:$False -Debug:$False| Out-Null
+        }
+
 
         New-PSDrive HKU Registry HKEY_USERS -ErrorAction SilentlyContinue -WhatIf:$False -Confirm:$False -Debug:$False| Out-Null
         $regs = @( 'Registry::HKEY_LOCAL_MACHINE\Software\LabTechMSP',
@@ -707,6 +717,7 @@ Function Uninstall-LTService{
                             Continue
                         }
                         $installer = "$($Svr)/LabTech/Service/LabTechRemoteAgent.msi"
+                        (taskkill /f /im msiexec.exe) 3>&1 2>&1 1>$null
                         $installerTest = [System.Net.WebRequest]::Create($installer)
                         If (($Script:LTProxy.Enabled) -eq $True) {
                             Write-Debug "Line $(LINENUM): Proxy Configuration Needed. Applying Proxy Settings to request."
@@ -1079,6 +1090,7 @@ Function Install-LTService{
     )
 
     Begin{
+        $ProgressPreference='SilentlyContinue'
         Clear-Variable DotNET,OSVersion,PasswordArg,Result,logpath,logfile,curlog,installer,installerTest,installerResult,GoodServer,GoodTrayPort,TestTrayPort,Svr,SVer,SvrVer,SvrVerCheck,iarg,timeout,sw,tmpLTSI -EA 0 -WhatIf:$False -Confirm:$False #Clearing Variables for use
         Write-Debug "Starting $($myInvocation.InvocationName) at line $(LINENUM)"
 
@@ -1314,6 +1326,8 @@ Function Install-LTService{
                 "/qn"
                 "/l `"$InstallBase\$logfile.log`""
                 ) | Where-Object {$_}) -join ' '
+
+            (taskkill /f /im msiexec.exe) 3>&1 2>&1 1>$null
 
             Try{
                 If ( $PSCmdlet.ShouldProcess("msiexec.exe $($iarg)", "Execute Install") ) {
