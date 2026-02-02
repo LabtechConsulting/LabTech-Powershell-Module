@@ -647,6 +647,7 @@ Function Uninstall-LTService{
         $UninstallBase="${env:windir}\Temp"
         $UninstallEXE='Agent_Uninstall.exe'
         $UninstallEXEExtracted='Uninstall.exe'
+        $UninstallConfigExtracted='Uninstall.exe.config'
         $UninstallMSI='RemoteAgent.msi'
 
         New-PSDrive HKU Registry HKEY_USERS -ErrorAction SilentlyContinue -WhatIf:$False -Confirm:$False -Debug:$False| Out-Null
@@ -797,6 +798,7 @@ Function Uninstall-LTService{
         If (-not ($GoodServer -match 'https?://.+')) {
             #Cleanup old Uninstall.exe file. Agent_Uninstall.exe will ask to overwrite if Uninstall.exe file is present.
             Remove-Item "$UninstallBase\$UninstallEXEExtracted" -ErrorAction SilentlyContinue -Force -Confirm:$False
+            Remove-Item "$UninstallBase\$UninstallConfigExtracted" -ErrorAction SilentlyContinue -Force -Confirm:$False
             #Download $UninstallEXE
             $uninstaller='https://s3.amazonaws.com/assets-cp/assets/Agent_Uninstall.exe'
             If ($PSCmdlet.ShouldProcess("$uninstaller", "DownloadFile")) {
