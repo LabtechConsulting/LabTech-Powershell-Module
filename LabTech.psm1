@@ -603,6 +603,9 @@ Function Uninstall-LTService{
     Update Date: 7/25/2024
     Purpose/Change: Uninstaller EXE fallback even if server is unavailable
 
+    Update Date: 2/2/2026
+    Purpose/Change: Added logic to remove Uninstall.exe from temp directory before downloading and running Agent_Uninstall.exe
+
 .LINK
     http://labtechconsulting.com
 #>
@@ -643,6 +646,7 @@ Function Uninstall-LTService{
         If (-not ($BasePath)) {$BasePath = "${env:windir}\LTSVC"}
         $UninstallBase="${env:windir}\Temp"
         $UninstallEXE='Agent_Uninstall.exe'
+        $UninstallEXEExtracted='Uninstall.exe'
         $UninstallMSI='RemoteAgent.msi'
 
         New-PSDrive HKU Registry HKEY_USERS -ErrorAction SilentlyContinue -WhatIf:$False -Confirm:$False -Debug:$False| Out-Null
@@ -791,6 +795,8 @@ Function Uninstall-LTService{
 
     End{
         If (-not ($GoodServer -match 'https?://.+')) {
+            #Cleanup old Uninstall.exe file. Agent_Uninstall.exe will ask to overwrite if Uninstall.exe file is present.
+            Remove-Item "$UninstallBase\$UninstallEXEExtracted" -ErrorAction SilentlyContinue -Force -Confirm:$False
             #Download $UninstallEXE
             $uninstaller='https://s3.amazonaws.com/assets-cp/assets/Agent_Uninstall.exe'
             If ($PSCmdlet.ShouldProcess("$uninstaller", "DownloadFile")) {
