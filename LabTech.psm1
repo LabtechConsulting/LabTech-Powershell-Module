@@ -11,7 +11,7 @@
     Tested Versions: v10.5-v12, v2019-v2024
 
 .NOTES
-    Version:        1.9.2
+    Version:        1.9.3
     Author:         Chris Taylor
     Website:        labtechconsulting.com
     Creation Date:  3/14/2016
@@ -43,7 +43,7 @@ If (-not ($PSVersionTable)) {Write-Warning 'PS1 Detected. PowerShell Version 2.0
 ElseIf ($PSVersionTable.PSVersion.Major -lt 3 ) {Write-Verbose 'PS2 Detected. PowerShell Version 3.0 or higher may be required for full functionality.'}
 
 #Module Version
-$ModuleVersion = "1.9.2"
+$ModuleVersion = "1.9.3"
 $ModuleGuid='f1f06c84-00c8-11ea-b6e8-000c29aaa7df'
 
 If ($env:PROCESSOR_ARCHITEW6432 -match '64' -and [IntPtr]::Size -ne 8 -and $env:PROCESSOR_ARCHITEW6432 -ne 'ARM64') {
