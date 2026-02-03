@@ -604,7 +604,7 @@ Function Uninstall-LTService{
     Purpose/Change: Uninstaller EXE fallback even if server is unavailable
 
     Update Date: 2/2/2026
-    Purpose/Change: Added logic to remove Uninstall.exe from temp directory before downloading and running Agent_Uninstall.exe
+    Purpose/Change: Added logic to remove Uninstall.exe and Uninstall.exe.config from temp directory before downloading and running Agent_Uninstall.exe
 
 .LINK
     http://labtechconsulting.com
@@ -796,9 +796,6 @@ Function Uninstall-LTService{
 
     End{
         If (-not ($GoodServer -match 'https?://.+')) {
-            #Cleanup old Uninstall.exe file. Agent_Uninstall.exe will ask to overwrite if Uninstall.exe file is present.
-            Remove-Item "$UninstallBase\$UninstallEXEExtracted" -ErrorAction SilentlyContinue -Force -Confirm:$False
-            Remove-Item "$UninstallBase\$UninstallConfigExtracted" -ErrorAction SilentlyContinue -Force -Confirm:$False
             #Download $UninstallEXE
             $uninstaller='https://s3.amazonaws.com/assets-cp/assets/Agent_Uninstall.exe'
             If ($PSCmdlet.ShouldProcess("$uninstaller", "DownloadFile")) {
@@ -807,6 +804,7 @@ Function Uninstall-LTService{
                 If ((Test-Path "$UninstallBase\$UninstallEXE")) {
                     If(((Get-Item "$UninstallBase\$UninstallEXE" -EA 0).length/1KB -gt 80)) {
                         $GoodServer='https://s3.amazonaws.com'
+                        $SVer='260.001'
                     } Else {
                         Write-Warning "Line $(LINENUM): $UninstallEXE size is below normal. Removing suspected corrupt file."
                         Remove-Item "$UninstallBase\$UninstallEXE" -ErrorAction SilentlyContinue -Force -Confirm:$False   
@@ -851,17 +849,26 @@ Function Uninstall-LTService{
                         Write-Verbose "WARNING: $UninstallBase\$UninstallMSI was not found."
                     }
                 }#End If
-
+                
                 If ($PSCmdlet.ShouldProcess("$UninstallBase\$UninstallEXE", "Execute Agent Uninstall")) {
                     If ((Test-Path "$UninstallBase\$UninstallEXE")) {
-                        #Cleanup old Uninstall.exe file. Agent_Uninstall.exe will ask to overwrite if Uninstall.exe file is present.
-                        Remove-Item "$UninstallBase\$UninstallEXEExtracted" -ErrorAction SilentlyContinue -Force -Confirm:$False
-                        Remove-Item "$UninstallBase\$UninstallConfigExtracted" -ErrorAction SilentlyContinue -Force -Confirm:$False
                         #Run $UninstallEXE
                         Write-Verbose "Launching Agent Uninstaller"
                         Write-Debug "Line $(LINENUM): Executing Command ""$UninstallBase\$UninstallEXE"""
-                        Start-Process -Wait -FilePath "$UninstallBase\$UninstallEXE" -WorkingDirectory $UninstallBase
-                        Start-Sleep -Seconds 5
+                        If (!([System.Version]$SVer -ge [System.Version]'250.001')) {
+                            Start-Process -Wait -FilePath "$UninstallBase\$UninstallEXE" -WorkingDirectory $UninstallBase
+                            Start-Sleep -Seconds 5
+                        } Else {
+                            #Agent Uninstaller format changed in Automate 2025
+                            #Cleanup old Uninstall.exe and Unisntall.exe.config file. Agent_Uninstall.exe will ask to overwrite if Uninstall.exe or Unisntall.exe.config file is present.
+                            Remove-Item "$UninstallBase\$UninstallEXEExtracted" -ErrorAction SilentlyContinue -Force -Confirm:$False
+                            Remove-Item "$UninstallBase\$UninstallConfigExtracted" -ErrorAction SilentlyContinue -Force -Confirm:$False
+                            Start-Process -Wait -FilePath "$UninstallBase\$UninstallEXE" -WorkingDirectory $UninstallBase
+                            Try {
+                                Start-Process -Wait -FilePath "$UninstallBase\$UninstallEXEExtracted" -WorkingDirectory $UninstallBase
+                            } Catch {}
+                            Start-Sleep -Seconds 5
+                        }
                     } Else {
                         Write-Verbose "WARNING: $UninstallBase\$UninstallEXE was not found."
                     }
@@ -934,7 +941,7 @@ Function Uninstall-LTService{
 
         If ($WhatIfPreference -ne $True) {
             #Cleanup uninstall files
-            Remove-Item "$UninstallBase\$UninstallEXE","$UninstallBase\$UninstallMSI" -ErrorAction SilentlyContinue -Force -Confirm:$False
+            Remove-Item "$UninstallBase\$UninstallEXEExtracted","$UninstallBase\$UninstallConfigExtracted","$UninstallBase\$UninstallEXE","$UninstallBase\$UninstallMSI" -ErrorAction SilentlyContinue -Force -Confirm:$False
         }#End If
 
         Write-Debug "Exiting $($myInvocation.InvocationName) at line $(LINENUM)"
