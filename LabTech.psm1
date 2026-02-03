@@ -11,7 +11,7 @@
     Tested Versions: v10.5-v12, v2019-v2024
 
 .NOTES
-    Version:        1.9.2
+    Version:        1.9.3
     Author:         Chris Taylor
     Website:        labtechconsulting.com
     Creation Date:  3/14/2016
@@ -43,7 +43,7 @@ If (-not ($PSVersionTable)) {Write-Warning 'PS1 Detected. PowerShell Version 2.0
 ElseIf ($PSVersionTable.PSVersion.Major -lt 3 ) {Write-Verbose 'PS2 Detected. PowerShell Version 3.0 or higher may be required for full functionality.'}
 
 #Module Version
-$ModuleVersion = "1.9.2"
+$ModuleVersion = "1.9.3"
 $ModuleGuid='f1f06c84-00c8-11ea-b6e8-000c29aaa7df'
 
 If ($env:PROCESSOR_ARCHITEW6432 -match '64' -and [IntPtr]::Size -ne 8 -and $env:PROCESSOR_ARCHITEW6432 -ne 'ARM64') {
@@ -603,6 +603,9 @@ Function Uninstall-LTService{
     Update Date: 7/25/2024
     Purpose/Change: Uninstaller EXE fallback even if server is unavailable
 
+    Update Date: 2/2/2026
+    Purpose/Change: Added logic to remove Uninstall.exe and Uninstall.exe.config from temp directory before downloading and running Agent_Uninstall.exe
+
 .LINK
     http://labtechconsulting.com
 #>
@@ -643,6 +646,8 @@ Function Uninstall-LTService{
         If (-not ($BasePath)) {$BasePath = "${env:windir}\LTSVC"}
         $UninstallBase="${env:windir}\Temp"
         $UninstallEXE='Agent_Uninstall.exe'
+        $UninstallEXEExtracted='Uninstall.exe'
+        $UninstallConfigExtracted='Uninstall.exe.config'
         $UninstallMSI='RemoteAgent.msi'
 
         New-PSDrive HKU Registry HKEY_USERS -ErrorAction SilentlyContinue -WhatIf:$False -Confirm:$False -Debug:$False| Out-Null
@@ -799,6 +804,7 @@ Function Uninstall-LTService{
                 If ((Test-Path "$UninstallBase\$UninstallEXE")) {
                     If(((Get-Item "$UninstallBase\$UninstallEXE" -EA 0).length/1KB -gt 80)) {
                         $GoodServer='https://s3.amazonaws.com'
+                        $SVer='260.001'
                     } Else {
                         Write-Warning "Line $(LINENUM): $UninstallEXE size is below normal. Removing suspected corrupt file."
                         Remove-Item "$UninstallBase\$UninstallEXE" -ErrorAction SilentlyContinue -Force -Confirm:$False   
@@ -843,14 +849,26 @@ Function Uninstall-LTService{
                         Write-Verbose "WARNING: $UninstallBase\$UninstallMSI was not found."
                     }
                 }#End If
-
+                
                 If ($PSCmdlet.ShouldProcess("$UninstallBase\$UninstallEXE", "Execute Agent Uninstall")) {
                     If ((Test-Path "$UninstallBase\$UninstallEXE")) {
                         #Run $UninstallEXE
                         Write-Verbose "Launching Agent Uninstaller"
                         Write-Debug "Line $(LINENUM): Executing Command ""$UninstallBase\$UninstallEXE"""
-                        Start-Process -Wait -FilePath "$UninstallBase\$UninstallEXE" -WorkingDirectory $UninstallBase
-                        Start-Sleep -Seconds 5
+                        If (!([System.Version]$SVer -ge [System.Version]'250.001')) {
+                            Start-Process -Wait -FilePath "$UninstallBase\$UninstallEXE" -WorkingDirectory $UninstallBase
+                            Start-Sleep -Seconds 5
+                        } Else {
+                            #Agent Uninstaller format changed in Automate 2025
+                            #Cleanup old Uninstall.exe and Unisntall.exe.config file. Agent_Uninstall.exe will ask to overwrite if Uninstall.exe or Unisntall.exe.config file is present.
+                            Remove-Item "$UninstallBase\$UninstallEXEExtracted" -ErrorAction SilentlyContinue -Force -Confirm:$False
+                            Remove-Item "$UninstallBase\$UninstallConfigExtracted" -ErrorAction SilentlyContinue -Force -Confirm:$False
+                            Start-Process -Wait -FilePath "$UninstallBase\$UninstallEXE" -WorkingDirectory $UninstallBase
+                            Try {
+                                Start-Process -Wait -FilePath "$UninstallBase\$UninstallEXEExtracted" -WorkingDirectory $UninstallBase
+                            } Catch {}
+                            Start-Sleep -Seconds 5
+                        }
                     } Else {
                         Write-Verbose "WARNING: $UninstallBase\$UninstallEXE was not found."
                     }
@@ -923,7 +941,7 @@ Function Uninstall-LTService{
 
         If ($WhatIfPreference -ne $True) {
             #Cleanup uninstall files
-            Remove-Item "$UninstallBase\$UninstallEXE","$UninstallBase\$UninstallMSI" -ErrorAction SilentlyContinue -Force -Confirm:$False
+            Remove-Item "$UninstallBase\$UninstallEXEExtracted","$UninstallBase\$UninstallConfigExtracted","$UninstallBase\$UninstallEXE","$UninstallBase\$UninstallMSI" -ErrorAction SilentlyContinue -Force -Confirm:$False
         }#End If
 
         Write-Debug "Exiting $($myInvocation.InvocationName) at line $(LINENUM)"
